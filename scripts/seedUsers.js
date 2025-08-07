@@ -4,7 +4,7 @@ import bcrypt from 'bcrypt';
 
 async function seed() {
   const db = await open({
-    filename: '../db.sqlite',
+    filename: './db.sqlite',
     driver: sqlite3.Database
   });
 

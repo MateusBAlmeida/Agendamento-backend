@@ -225,16 +225,74 @@ app.post('/reservas', auth, async (req, res) => {
 // Listar reservas do usuário
 app.get('/reservas', auth, async (req, res) => {
   const db = await dbPromise;
-  const reservas = await db.all('SELECT * FROM reservas WHERE usuario_id = ?', [req.user.id]);
+  const reservas = await db.all(`
+    SELECT r.*, 
+           CASE 
+             WHEN datetime(r.data_fim) < datetime('now') THEN 'passada'
+             ELSE 'ativa'
+           END as status
+    FROM reservas r 
+    WHERE r.usuario_id = ?
+    ORDER BY 
+      CASE 
+        WHEN datetime(r.data_inicio) >= datetime('now') THEN 0
+        ELSE 1
+      END,
+      datetime(r.data_inicio) DESC
+  `, [req.user.id]);
   res.json(reservas);
 });
 
+// Cancelar reserva
+app.delete('/reservas/:id', auth, async (req, res) => {
+  const { id } = req.params;
+  const db = await dbPromise;
+
+  try {
+    // Verifica se a reserva existe e pertence ao usuário
+    const reserva = await db.get(
+      'SELECT *, u.nome as usuario_nome FROM reservas r LEFT JOIN usuarios u ON r.usuario_id = u.id WHERE r.id = ? AND r.usuario_id = ?',
+      [id, req.user.id]
+    );
+
+    if (!reserva) {
+      return res.status(404).json({ error: 'Reserva não encontrada' });
+    }
+
+    // Verifica se a reserva já passou
+    const dataFim = new Date(reserva.data_fim);
+    if (dataFim < new Date()) {
+      return res.status(400).json({ error: 'Não é possível cancelar uma reserva que já passou' });
+    }
+
+    // Deleta a reserva
+    await db.run('DELETE FROM reservas WHERE id = ?', [id]);
+    
+    res.json({ message: 'Reserva cancelada com sucesso' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Erro ao cancelar reserva' });
+  }
+});
+
 // Listar todas as reservas com filtros
-app.get('/reservas/calendario', auth, async (req, res) => {
+app.get('/reservas/calendario', async (req, res) => {
   const { tipo, item_nome, data_inicio, data_fim } = req.query;
   const db = await dbPromise;
   
-  let query = 'SELECT r.*, u.nome as usuario_nome FROM reservas r LEFT JOIN usuarios u ON r.usuario_id = u.id WHERE 1=1';
+  let query = `
+    SELECT 
+      r.*,
+      u.nome as usuario_nome,
+      u.email as usuario_email,
+      CASE 
+        WHEN datetime(r.data_fim) < datetime('now') THEN 'passada'
+        ELSE 'ativa'
+      END as status
+    FROM reservas r 
+    LEFT JOIN usuarios u ON r.usuario_id = u.id 
+    WHERE 1=1`;
+    
   const params = [];
 
   if (tipo) {
@@ -256,6 +314,16 @@ app.get('/reservas/calendario', auth, async (req, res) => {
     query += ' AND r.data_inicio < ?';
     params.push(data_fim);
   }
+
+  // Ordenação: primeiro as reservas futuras, depois as passadas
+  // E dentro de cada grupo, ordenar por data de início
+  query += `
+    ORDER BY 
+      CASE 
+        WHEN datetime(r.data_inicio) >= datetime('now') THEN 0
+        ELSE 1
+      END,
+      datetime(r.data_inicio) ASC`;
 
   try {
     const reservas = await db.all(query, params);
